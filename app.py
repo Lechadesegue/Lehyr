@@ -1,3 +1,4 @@
+
 from datetime import datetime, timedelta
 from flask import Flask, render_template, redirect, url_for, session, request, jsonify, abort
 from authlib.integrations.flask_client import OAuth
@@ -13,18 +14,22 @@ app.config.from_object(Config)
 
 db.init_app(app)
 
+with app.app_context():
+    db.create_all()
+
 oauth = OAuth(app)
 
 oauth.register(
     name='google',
     client_id=app.config['GOOGLE_CLIENT_ID'],
     client_secret=app.config['GOOGLE_CLIENT_SECRET'],
-    access_token_url='https://oauth2.googleapis.com/token',
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
     authorize_url='https://accounts.google.com/o/oauth2/v2/auth',
     authorize_params={'access_type': 'offline', 'prompt': 'consent'},
-    api_base_url='https://www.googleapis.com/oauth2/v1/',
     client_kwargs={'scope': 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets'}
 )
+
+# ---------- Helpers Google Sheets ---------- #
 
 def get_credentials(user: User):
     creds = Credentials(
@@ -57,6 +62,8 @@ def append_entry_to_sheet(user: User, record_name: str, entry: Entry):
     except HttpError as e:
         app.logger.error(f'Error escribiendo en Sheets: {e}')
 
+# ---------- Rutas ---------- #
+
 @app.route('/')
 def index():
     if 'user_id' not in session:
@@ -82,6 +89,7 @@ def authorize():
         user = User(email=email, google_id=google_id, refresh_token=token['refresh_token'])
         db.session.add(user)
         db.session.commit()
+        # TODO: crear hoja personal y guardar sheet_id
     else:
         if token.get('refresh_token'):
             user.refresh_token = token['refresh_token']
@@ -95,6 +103,20 @@ def logout():
     session.clear()
     return redirect(url_for('index'))
 
+# ----- API endpoints mínimos (crear registro) ----- #
+
+@app.route('/api/records', methods=['POST'])
+def create_record():
+    if 'user_id' not in session:
+        abort(401)
+    name = request.json.get('name')
+    color = request.json.get('color')
+    record = Record(user_id=session['user_id'], name=name, color=color)
+    db.session.add(record)
+    db.session.commit()
+    return jsonify({'id': record.id})
+
+# CLI para inicializar la DB
 @app.cli.command('init-db')
 def init_db_cmd():
     db.create_all()
