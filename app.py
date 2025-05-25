@@ -1,5 +1,7 @@
 
 from datetime import datetime, timedelta
+import secrets
+
 from flask import Flask, render_template, redirect, url_for, session, request, jsonify, abort
 from authlib.integrations.flask_client import OAuth
 from googleapiclient.discovery import build
@@ -13,7 +15,6 @@ app = Flask(__name__)
 app.config.from_object(Config)
 
 db.init_app(app)
-
 with app.app_context():
     db.create_all()
 
@@ -24,7 +25,6 @@ oauth.register(
     client_id=app.config['GOOGLE_CLIENT_ID'],
     client_secret=app.config['GOOGLE_CLIENT_SECRET'],
     server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
-    authorize_url='https://accounts.google.com/o/oauth2/v2/auth',
     authorize_params={'access_type': 'offline', 'prompt': 'consent'},
     client_kwargs={'scope': 'openid email profile https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets'}
 )
@@ -32,26 +32,23 @@ oauth.register(
 # ---------- Helpers Google Sheets ---------- #
 
 def get_credentials(user: User):
-    creds = Credentials(
+    return Credentials(
         None,
         refresh_token=user.refresh_token,
         client_id=app.config['GOOGLE_CLIENT_ID'],
         client_secret=app.config['GOOGLE_CLIENT_SECRET'],
         token_uri='https://oauth2.googleapis.com/token'
     )
-    return creds
 
 def append_entry_to_sheet(user: User, record_name: str, entry: Entry):
     creds = get_credentials(user)
     service = build('sheets', 'v4', credentials=creds)
-    body = {
-        'values': [[
-            record_name,
-            entry.date.isoformat(),
-            entry.start.strftime('%H:%M:%S'),
-            str(timedelta(seconds=entry.duration_sec))
-        ]]
-    }
+    body = {'values': [[
+        record_name,
+        entry.date.isoformat(),
+        entry.start.strftime('%H:%M:%S'),
+        str(timedelta(seconds=entry.duration_sec))
+    ]]}
     try:
         service.spreadsheets().values().append(
             spreadsheetId=user.sheet_id,
@@ -75,18 +72,21 @@ def index():
 @app.route('/login')
 def login():
     redirect_uri = url_for('authorize', _external=True)
-    return oauth.google.authorize_redirect(redirect_uri)
+    nonce = secrets.token_urlsafe(16)
+    session['oauth_nonce'] = nonce
+    return oauth.google.authorize_redirect(redirect_uri, nonce=nonce)
 
 @app.route('/authorize')
 def authorize():
     token = oauth.google.authorize_access_token()
-    user_info = oauth.google.parse_id_token(token)
+    nonce = session.pop('oauth_nonce', None)
+    user_info = oauth.google.parse_id_token(token, nonce=nonce)
     email = user_info['email']
     google_id = user_info['sub']
 
     user = User.query.filter_by(email=email).first()
     if not user:
-        user = User(email=email, google_id=google_id, refresh_token=token['refresh_token'])
+        user = User(email=email, google_id=google_id, refresh_token=token.get('refresh_token'))
         db.session.add(user)
         db.session.commit()
         # TODO: crear hoja personal y guardar sheet_id
@@ -103,20 +103,21 @@ def logout():
     session.clear()
     return redirect(url_for('index'))
 
-# ----- API endpoints mínimos (crear registro) ----- #
+# ----- API endpoints mínimos ----- #
 
 @app.route('/api/records', methods=['POST'])
 def create_record():
     if 'user_id' not in session:
         abort(401)
-    name = request.json.get('name')
-    color = request.json.get('color')
+    data = request.json or {}
+    name = data.get('name')
+    color = data.get('color', '#88C0D0')
     record = Record(user_id=session['user_id'], name=name, color=color)
     db.session.add(record)
     db.session.commit()
     return jsonify({'id': record.id})
 
-# CLI para inicializar la DB
+# CLI init
 @app.cli.command('init-db')
 def init_db_cmd():
     db.create_all()
