@@ -8,7 +8,7 @@ class User(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False)
     google_id = db.Column(db.String(255), unique=True, nullable=False)
     refresh_token = db.Column(db.Text, nullable=False)
-    sheet_id = db.Column(db.String(64))  # ID de la hoja creada para este usuario
+    sheet_id = db.Column(db.String(64))
     records = db.relationship('Record', backref='user', lazy=True)
 
 class Record(db.Model):

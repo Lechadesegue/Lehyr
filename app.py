@@ -7,15 +7,21 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 
-from config import Config
 from models import db, User, Record, Entry
+
+class Config:
+    SECRET_KEY = 'dev-secret'  # en Render usar variable FLASK_SECRET_KEY
+    SQLALCHEMY_DATABASE_URI = 'sqlite:///app.db'
+    SQLALCHEMY_TRACK_MODIFICATIONS = False
+    GOOGLE_CLIENT_ID = ''
+    GOOGLE_CLIENT_SECRET = ''
+    SHEET_NAME = 'Registros y horarios (read only)'
 
 app = Flask(__name__)
 app.config.from_object(Config)
 
 db.init_app(app)
 with app.app_context():
-    # asegurar columna sheet_id si no existe
     try:
         db.engine.execute('ALTER TABLE user ADD COLUMN sheet_id TEXT')
     except Exception:
@@ -35,33 +41,41 @@ oauth.register(
 )
 
 def get_credentials(user):
-    return Credentials(None, refresh_token=user.refresh_token,
+    return Credentials(None,
+                       refresh_token=user.refresh_token,
                        client_id=app.config['GOOGLE_CLIENT_ID'],
                        client_secret=app.config['GOOGLE_CLIENT_SECRET'],
                        token_uri='https://oauth2.googleapis.com/token')
 
 HEADERS = [['Registro', 'Fecha', 'Inicio', 'Duración']]
 
-def ensure_personal_sheet(user):
+def ensure_sheet(user):
     creds = get_credentials(user)
     service = build('sheets', 'v4', credentials=creds)
     if user.sheet_id:
-        # asegurar encabezados
-        values = service.spreadsheets().values().get(
-            spreadsheetId=user.sheet_id, range='A1:D1').execute().get('values')
-        if not values:
-            service.spreadsheets().values().update(
-                spreadsheetId=user.sheet_id, range='A1',
-                valueInputOption='RAW', body={'values': HEADERS}).execute()
+        try:
+            if not service.spreadsheets().values().get(
+                    spreadsheetId=user.sheet_id, range='A1:D1').execute().get('values'):
+                service.spreadsheets().values().update(
+                    spreadsheetId=user.sheet_id, range='A1',
+                    valueInputOption='RAW', body={'values': HEADERS}).execute()
+        except HttpError:
+            pass
         return user.sheet_id
-    # crear hoja nueva
-    resp = service.spreadsheets().create(body={'properties': {'title': Config.SHEET_NAME}}).execute()
-    sid = resp['spreadsheetId']
+    sheet = service.spreadsheets().create(body={'properties': {'title': Config.SHEET_NAME}}).execute()
+    sid = sheet['spreadsheetId']
     service.spreadsheets().values().update(
-        spreadsheetId=sid, range='A1', valueInputOption='RAW',
-        body={'values': HEADERS}).execute()
+        spreadsheetId=sid, range='A1',
+        valueInputOption='RAW', body={'values': HEADERS}).execute()
     user.sheet_id = sid
     db.session.commit()
     return sid
 
-# resto de rutas...
+@app.route('/')
+def index():
+    if 'user_id' not in session:
+        return 'login placeholder', 200
+    return 'home placeholder', 200
+
+if __name__ == '__main__':
+    app.run()
